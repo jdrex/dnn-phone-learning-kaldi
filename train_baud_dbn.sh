@@ -73,7 +73,7 @@ if [ -f $ref_ali_dir/final.mdl ]; then
 fi
 
 # compute landmarks
-if [ $stage -le 0 ]; then
+if [ $stage -le -5 ]; then
     $cmd JOB=1:$nj $dir/log/spectrograms.JOB.log \
         compute-spectrogram-feats --window-type=hamming --sample-frequency=$sample_freq --round-to-power-of-two=false \
         --dft-length=1024 --frame-length=10 --frame-shift=5 scp:$sdata/JOB/wav.scp ark,scp:$sdata/JOB/spec_feats.ark,$sdata/JOB/spec_feats.scp
@@ -86,7 +86,7 @@ if [ $stage -le 0 ]; then
     cat $sdata/[0-9]*/spec_feats.scp > $data/spec_feats.scp
 fi
 
-if [ $stage -le 1 ]; then
+if [ $stage -le -4 ]; then
     echo "$0: Pre-training DBN."
     # Pre-train DBN, i.e. a stack of RBMs (small database, smaller DNN)
     # CHANGE THIS BACK TO 20
@@ -106,6 +106,12 @@ if [ $stage -le 1 ]; then
     nnet-concat $dir/dbn/final.nnet $mlp_init_old $mlp_init || exit 1 
 fi
 
+if [ $stage -le -3 ]; then
+# Note: JOB=1 just uses the 1st part of the features-- we only need a subset anyway.
+# automatically create topo file? 
+# also is it worth sampling hmm parameters?
+    $cmd JOB=1 $dir/log/init.log gmm-init-mono $lang/topo50 64 $dir/0.mdl $dir/tree || exit 1;
+fi
 
 if [ $stage -le 2 ]; then
     feature_transform=$dir/dbn/final.feature_transform
@@ -118,7 +124,7 @@ if [ $stage -le 2 ]; then
 	hmm-dnn-sample-ali --major-only=true --major-boundary-alpha=1.0 $dir/tree $dir/0.mdl ark:$sdata/JOB/bn_feats.ark ark:$sdata/JOB/landmarks.ark \
 	"ark,t:|gzip -c >$dir/ali.JOB.gz" ark,t:$dir/JOB.stats || exit 1;
     $cmd JOB=1:$nj $dir/log/acc.0.JOB.log \
-	hmm-acc-stats-ali --binary=true $dir/0.mdl "$feats" "ark:gunzip -c $dir/ali.JOB.gz|" $dir/0.JOB.acc || exit 1;
+	hmm-acc-stats-ali --binary=true $dir/0.mdl ark:$sdata/JOB/bn_feats.ark "ark:gunzip -c $dir/ali.JOB.gz|" $dir/0.JOB.acc || exit 1;
     stats=`ls $dir/*.stats | sed -e 's/^/ark:/g' -e 's/\n/ /g'`
     vector-sum $stats ark,t:$dir/class_counts >/dev/null || exit 1;
     rm $dir/*.stats 2>/dev/null
@@ -126,12 +132,13 @@ if [ $stage -le 2 ]; then
     if [ -f $nmi_file ]; then
 	rm -f $nmi_file
     fi
+
     if [ -f $ref_phones_file ]; then
 	find $dir/ -name 'ali*.gz' | xargs -I{} gunzip -c {} >> $hyp_ali_file
 	ali-to-phones --per-frame=true $dir/0.mdl ark:$hyp_ali_file ark,t:$hyp_phones_file
 	compute-ali-nmi ark:$ref_phones_file ark:$hyp_phones_file 2> $dir/nmi_temp
 	ali-to-landmarks ark:$hyp_phones_file ark,t:$hyp_landmarks_file
-	score-landmarks ark:$hyp_landmarks_file ark:$ref_landmarks_file
+	score-landmarks ark:$hyp_landmarks_file ark:$ref_landmarks_file 2> $dir/landmarks_temp
 	this_nmi=`grep 'NMI' $dir/nmi_temp | cut -d' ' -f3-`
 	echo "Iter 0 " $this_nmi >> $nmi_file
     fi
