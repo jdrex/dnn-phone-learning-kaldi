@@ -6,7 +6,7 @@
 #include <vector>
 
 #include "base/kaldi-common.h"
-#include "baud/hmm-gmm-boundary-sampler.h"
+#include "dnnbaudbin/hmm-gmm-boundary-sampler.h"
 #include "gmm/am-diag-gmm.h"
 #include "hmm/transition-model.h"
 #include "hmm/hmm-topology.h"

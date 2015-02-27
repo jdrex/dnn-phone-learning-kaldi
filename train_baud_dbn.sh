@@ -12,8 +12,6 @@ num_iters=20
 #num_gibbs_iters=15    # Number of iterations of training
 #num_viterbi_iters=15
 totgauss=1500 # Target #Gaussians.  
-max_iter_inc=15 # Last iter to increase #Gauss on.
-power=0.25 # exponent to determine number of gaussians from occurrence counts
 boost_silence=1.0 # Factor by which to boost silence likelihoods in alignment
 config= # name of config file.
 stage=-5
@@ -76,24 +74,24 @@ fi
 if [ $stage -le -5 ]; then
     $cmd JOB=1:$nj $dir/log/spectrograms.JOB.log \
         compute-spectrogram-feats --window-type=hamming --sample-frequency=$sample_freq --round-to-power-of-two=false \
-        --dft-length=1024 --frame-length=10 --frame-shift=5 scp:$sdata/JOB/wav.scp ark,scp:$sdata/JOB/spec_feats.ark,$sdata/JOB/spec_feats.scp
+        --dft-length=1024 --frame-length=25 --frame-shift=10 scp:$sdata/JOB/wav.scp ark,scp:$sdata/JOB/feats.ark,$sdata/JOB/feats.scp
     
     $cmd JOB=1:$nj $dir/log/landmarks.JOB.log \
         compute-landmarks --sigma=1.5 --major-only=false --frame-change-increment=2 --span=8 --min-segment-length=4 \
-        --boundary-threshold=15 --cluster-threshold=20 scp:$sdata/JOB/spec_feats.scp ark,t:$sdata/JOB/landmarks.ark || exit 1;
+        --boundary-threshold=15 --cluster-threshold=20 scp:$sdata/JOB/feats.scp ark,t:$sdata/JOB/landmarks.ark || exit 1;
 
     # create one scp file for spectrograms
-    cat $sdata/[0-9]*/spec_feats.scp > $data/spec_feats.scp
+    cat $sdata/[0-9]*/feats.scp > $data/feats.scp
 fi
 
 if [ $stage -le -4 ]; then
     echo "$0: Pre-training DBN."
     # Pre-train DBN, i.e. a stack of RBMs (small database, smaller DNN)
-    # CHANGE THIS BACK TO 20
-    $cuda_cmd $dir/log/pretrain_dbn.log steps/nnet/pretrain_dbn.sh --hid-dim 1024 --rbm-iter 2 $data $dir/dbn || exit 1;
+    #$cuda_cmd $dir/log/pretrain_dbn.log steps/nnet/pretrain_dbn.sh --hid-dim 1024 --rbm-iter 10 $data $dir/dbn || exit 1;
   
     echo "$0: Initializing DNN from DBN"
     # make network prototype for softmax layer
+    mkdir $dir/dnn
     mlp_proto=$dir/dnn/nnet.proto
     utils/nnet/make_nnet_proto.py 64 300 0 1024 > $mlp_proto || exit 1
 
@@ -103,28 +101,28 @@ if [ $stage -le -4 ]; then
 
     # concat dbn and softmax layer
     mlp_init_old=$mlp_init; mlp_init=$dir/dnn/nnet_dbn_dnn.init
-    nnet-concat $dir/dbn/final.nnet $mlp_init_old $mlp_init || exit 1 
+    nnet-concat $dir/dbn/6.dbn $mlp_init_old $mlp_init || exit 1 
 fi
 
 if [ $stage -le -3 ]; then
-# Note: JOB=1 just uses the 1st part of the features-- we only need a subset anyway.
-# automatically create topo file? 
-# also is it worth sampling hmm parameters?
-    $cmd JOB=1 $dir/log/init.log gmm-init-mono $lang/topo50 64 $dir/0.mdl $dir/tree || exit 1;
+    # Note: JOB=1 just uses the 1st part of the features-- we only need a subset anyway.
+    # automatically create topo file? 
+    # also is it worth sampling hmm parameters?
+    $cmd JOB=1 $dir/log/init.log gmm-init-mono $lang/topo100 300 $dir/0.mdl $dir/tree || exit 1;
 fi
 
-if [ $stage -le 2 ]; then
+if [ $stage -le -2 ]; then
     feature_transform=$dir/dbn/final.feature_transform
-    #Run the forward pass to generate BN features
-    $cmd JOB=1:$nj $dir/log/make_bnfeats.JOB.log nnet-forward --feature-transform=$feature_transform $dir/dbn/final.nnet \
-	scp:$sdata/JOB/spec_feats.scp ark,scp:$sdata/JOB/bn_feats.ark,scp:$sdata/JOB/bn_feats.scp || exit 1;
+    #Run the forward pass to generate features
+    $cuda_cmd JOB=1:$nj $dir/log/make_dnn.JOB.log nnet-forward --use-gpu=yes --feature-transform=$feature_transform $dir/dnn/nnet_dbn_dnn.init \
+	scp:$sdata/JOB/feats.scp ark,scp:$sdata/JOB/dnn_feats.ark,$sdata/JOB/dnn_feats.scp || exit 1;
 
     echo "$0: Performing initial alignment"
     $cmd JOB=1:$nj $dir/log/align.0.JOB.log \
-	hmm-dnn-sample-ali --major-only=true --major-boundary-alpha=1.0 $dir/tree $dir/0.mdl ark:$sdata/JOB/bn_feats.ark ark:$sdata/JOB/landmarks.ark \
+	hmm-dnn-sample-ali --major-only=true --major-boundary-alpha=1.0 $dir/tree $dir/0.mdl ark:$sdata/JOB/dnn_feats.ark ark:$sdata/JOB/landmarks.ark \
 	"ark,t:|gzip -c >$dir/ali.JOB.gz" ark,t:$dir/JOB.stats || exit 1;
     $cmd JOB=1:$nj $dir/log/acc.0.JOB.log \
-	hmm-acc-stats-ali --binary=true $dir/0.mdl ark:$sdata/JOB/bn_feats.ark "ark:gunzip -c $dir/ali.JOB.gz|" $dir/0.JOB.acc || exit 1;
+	gmm-acc-stats-ali --binary=true $dir/0.mdl ark:$sdata/JOB/dnn_feats.ark "ark:gunzip -c $dir/ali.JOB.gz|" $dir/0.JOB.acc || exit 1;
     stats=`ls $dir/*.stats | sed -e 's/^/ark:/g' -e 's/\n/ /g'`
     vector-sum $stats ark,t:$dir/class_counts >/dev/null || exit 1;
     rm $dir/*.stats 2>/dev/null
@@ -144,14 +142,20 @@ if [ $stage -le 2 ]; then
     fi
 fi
 
-exit 0
 # In the following steps, the --min-gaussian-occupancy=3 option is important, otherwise
 # we fail to est "rare" phones and later on, they never align properly.
 
 if [ $stage -le 0 ]; then
-    gmm-est --min-gaussian-occupancy=3  --mix-up=$numgauss --power=$power \
-	$dir/0.mdl "gmm-sum-accs - $dir/0.*.acc|" $dir/1.mdl 2> $dir/log/update.0.log || exit 1;
+    echo "$0: stage 0"
+    gmm-est --min-gaussian-occupancy=3 $dir/0.mdl "gmm-sum-accs - $dir/0.*.acc|" $dir/1.mdl 2> $dir/log/update.0.log || exit 1;
     rm $dir/0.*.acc
+
+    echo "$0: stage 0 part 2"
+    cp $dir/1.mdl $dir/final.mdl
+    rm -r ${data}_trd90 ${data}_cv10 2> /dev/null
+    utils/subset_data_dir_tr_cv.sh $data ${data}_tr90 ${data}_cv10 || exit 1;
+    steps/nnet/train.sh --mlp-init $dir/dnn/nnet_dbn_dnn.init --learn-rate 0.008 ${data}_tr90 ${data}_cv10 data/lang $dir $dir $dir/dnn1
+    rm $dir/final.mdl 2> /dev/null
 fi
 
 x=1
@@ -160,34 +164,33 @@ decay=$anneal_decay
 while [ $x -lt $num_iters ]; do
     echo "$0: Pass $x"
     if [ $stage -le $x ]; then
+	#Run the forward pass to generate features
 	feature_transform=$dir/dbn/final.feature_transform
-	nnet=$dir/dnn/feature_extractor.nnet
-	nnet-copy --remove-last-layers=2 --binary=false $dir/dnn/final.nnet $nnet 2> $dir/log/feature_extractor.log
-
-	rm $sdata/*/bn_feats*
-
-	#Run the forward pass to generate BN features
-	$cmd JOB=1:$nj $dir/log/make_bnfeats.JOB.log nnet-forward --feature-transform=$feature_transform $nnet \
-	    scp:$sdata/JOB/spec_feats.scp ark,scp:$sdata/JOB/bn_feats.ark,scp:$sdata/JOB/bn_feats.scp || exit 1;
+	$cuda_cmd JOB=1:$nj $dir/log/make_dnn.$x.JOB.log nnet-forward --feature-transform=$feature_transform $dir/dnn$x/final.nnet \
+	    scp:$sdata/JOB/feats.scp ark,scp:$sdata/JOB/dnn_feats.ark,$sdata/JOB/dnn_feats.scp || exit 1;
 
 	echo "$0: Aligning data"
 	$cmd JOB=1:$nj $dir/log/align.$x.JOB.log \
-	    hmm-gmm-sample-ali --major-boundary-alpha=0.9 --minor-boundary-alpha=0.2 --likelihood-scale=$scale --stats-rspecifier=ark:$dir/class_counts $dir/tree $dir/$x.mdl \
-	    "$feats" ark:$sdata/JOB/landmarks.ark "ark,t:|gzip -c >$dir/ali.JOB.gz" \
-	    ark,t:$dir/JOB.stats || exit 1;
+	    hmm-dnn-sample-ali --major-boundary-alpha=0.9 --minor-boundary-alpha=0.2 --likelihood-scale=$scale --stats-rspecifier=ark:$dir/class_counts $dir/tree $dir/$x.mdl \
+	    ark:$sdata/JOB/dnn_feats.ark ark:$sdata/JOB/landmarks.ark \
+	    "ark,t:|gzip -c >$dir/ali.JOB.gz" ark,t:$dir/JOB.stats || exit 1;
+
 	$cmd JOB=1:$nj $dir/log/acc.$x.JOB.log \
-	    gmm-acc-stats-ali $dir/$x.mdl "$feats" "ark:gunzip -c $dir/ali.JOB.gz|" \
+	    gmm-acc-stats-ali $dir/$x.mdl ark:$sdata/JOB/dnn_feats.ark "ark:gunzip -c $dir/ali.JOB.gz|" \
 	    $dir/$x.JOB.acc || exit 1;
 	$cmd $dir/log/update.$x.log \
-	    gmm-est --write-occs=$dir/$[$x+1].occs --mix-up=$numgauss --power=$power $dir/$x.mdl \
+	    gmm-est --write-occs=$dir/$[$x+1].occs $dir/$x.mdl \
 	    "gmm-sum-accs - $dir/$x.*.acc|" $dir/$[$x+1].mdl || exit 1;
 	stats=`ls $dir/*.stats | sed -e 's/^/ark:/g' -e 's/\n/ /g'`
 	vector-sum $stats ark,t:$dir/class_counts > /dev/null
+
+	rm $dir/final.mdl 2> /dev/null;
+	cp $dir/dnn$x/final.mdl $dir/final.mdl;
+	steps/nnet/train.sh --mlp-init $dir/dnn$x/final.nnet --learn-rate 0.008 ${data}_tr90 ${data}_cv10 data/lang $dir $dir $dir/dnn$[$x+1]
+
 	rm $dir/*.stats 2>/dev/null
 	rm $dir/$x.mdl $dir/$x.*.acc $dir/$x.occs 2>/dev/null
-    fi
-    if [ $x -le $max_iter_inc ]; then
-	numgauss=$[$numgauss+$incgauss];
+
     fi
     if [ -f $ref_phones_file ]; then
 	rm -f $hyp_ali_file

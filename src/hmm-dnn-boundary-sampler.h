@@ -83,8 +83,7 @@ public:
 	bool ResampleAlignment(const Matrix<BaseFloat> &features,
 											   const std::vector<int32> &old_bounds,
 											   const LandmarkSeq &landmarks,
-											   const AmDiagGmm &am_gmm,
-	 											 const TransitionModel &trans_model,
+											  	 const TransitionModel &trans_model,
 	 											 const ContextDependency &ctx_dep,
 	 											 const std::string &utt_id,
 	 											 const std::vector<int32> class_counts,
@@ -95,7 +94,6 @@ public:
 	void SampleBounds(const Matrix<BaseFloat> &features,
 										const std::vector<int32> &old_bounds, 
 										const LandmarkSeq &landmarks,
-										const AmDiagGmm &am_gmm,
 										const TransitionModel &trans_model,
 										const ContextDependency &ctx_dep,
 										const std::vector<int32> &class_counts,
@@ -104,7 +102,6 @@ public:
 	void SampleClusters(const Matrix<BaseFloat> &features,
 											const std::string &utt_id,
 											const std::vector<int32> &new_bounds, 
-											const AmDiagGmm &am_gmm,
 											const TransitionModel &trans_model,
 											const ContextDependency &ctx_dep,
 											const std::vector<int32> &class_counts,
@@ -113,7 +110,6 @@ public:
 	void SampleStateSequence(const Matrix<BaseFloat> &features,
 													 const std::vector<int32> &new_bounds,
 													 const std::vector<int32> &new_clusters,
-													 const AmDiagGmm &am_gmm,
 													 const TransitionModel &trans_model,
 													 const ContextDependency &ctx_dep,
 													 std::vector<int32> *state_sequence);
@@ -129,14 +125,12 @@ public:
 															std::vector<int32> *old_clusters);
 
 	BaseFloat ComputeSegmentLikelihood(const SubMatrix<BaseFloat> &features,
-																		 const AmDiagGmm &am_gmm,
 																		 const TransitionModel &trans_model,
 																		 const ContextDependency &ctx_dep,
 																		 const std::vector<int32> &class_counts,
 																		 const int32 N);
 
 	BaseFloat ComputeHmmDnnLikelihood(const SubMatrix<BaseFloat> &features,
-																		const AmDiagGmm &am_gmm,
 																		const TransitionModel &trans_model,
 																		const ContextDependency &ctx_dep,
 																		const int32 phone_index);

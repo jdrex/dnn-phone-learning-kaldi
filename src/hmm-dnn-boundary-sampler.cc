@@ -7,7 +7,7 @@
 #include <vector>
 
 #include "base/kaldi-common.h"
-#include "baud/hmm-dnn-boundary-sampler.h"
+#include "dnnbaudbin/hmm-dnn-boundary-sampler.h"
 #include "hmm/transition-model.h"
 #include "hmm/hmm-topology.h"
 #include "landmarks/landmark-utils.h"
@@ -99,10 +99,10 @@ namespace kaldi {
     alpha->clear();
     alpha->resize(num_frames, std::vector<BaseFloat>(num_states, kLogZero));
     // Initialize with the first state and the first frame
-    (*alpha)[0][0] = features.Row(0)(0);
+    (*alpha)[0][0] = features.Row(0)(pdf_ids[0]);
     for (int32 t = 1; t < num_frames; ++t) {
       for (int32 j = 0; j < num_states; ++j) {
-	const BaseFloat likelihood = features.Row(t)(j);
+	const BaseFloat likelihood = features.Row(t)(pdf_ids[j]);
 	std::vector<BaseFloat> prev_alphas;
 	prev_alphas.resize(num_states);
 	for (int32 i = 0; i < num_states; ++i) {
@@ -135,7 +135,7 @@ namespace kaldi {
       // Precompute b_j(O_{t+1})
       std::vector<BaseFloat> b(num_states);
       for (int32 j = 0; j < num_states; ++j) {
-	b[j] = features.Row(t + 1)(j);
+	b[j] = features.Row(t + 1)(pdf_ids[j]);
       }
       for (int32 i = 0; i < num_states; ++i) {
 	std::vector<BaseFloat> vals(num_states);
@@ -476,7 +476,9 @@ namespace kaldi {
       std::vector<BaseFloat> unlogged_posteriors;
       const BaseFloat normalizer = LogSumExpVector(posteriors);
       for (int32 i = 0; i < posteriors.size(); ++i) {
-	unlogged_posteriors.push_back(std::exp(posteriors[i] - normalizer));
+	BaseFloat unlogged_pos = std::exp(posteriors[i] - normalizer);
+	unlogged_posteriors.push_back(unlogged_pos);
+	KALDI_LOG << i << ": prob = " << unlogged_pos;
       }
       std::discrete_distribution<int32> dist(unlogged_posteriors.begin(), unlogged_posteriors.end());
       const int32 sampled_class = dist(generator);

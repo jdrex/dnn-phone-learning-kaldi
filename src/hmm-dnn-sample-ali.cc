@@ -3,7 +3,7 @@
 // Author: David Harwath (2014)
 
 #include "base/kaldi-common.h"
-#include "baud/hmm-dnn-boundary-sampler.h"
+#include "dnnbaudbin/hmm-dnn-boundary-sampler.h"
 #include "gmm/am-diag-gmm.h"
 #include "hmm/transition-model.h"
 #include "landmarks/landmark-utils.h"
@@ -189,7 +189,7 @@ int main(int argc, char *argv[]) {
       }
       
       // resample boundaries
-      if (sampler.ResampleAlignment(features, old_bounds, landmarks, am_gmm, trans_model,
+      if (sampler.ResampleAlignment(features, old_bounds, landmarks, trans_model,
         ctx_dep, utt, class_counts, &new_class_counts, &alignments_writer, &like)) {
         tot_like += like;
         frame_count += features.NumRows();
