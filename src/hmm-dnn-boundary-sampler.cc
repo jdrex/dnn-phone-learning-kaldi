@@ -8,6 +8,7 @@
 
 #include "base/kaldi-common.h"
 #include "dnnbaudbin/hmm-dnn-boundary-sampler.h"
+#include "gmm/am-diag-gmm.h"
 #include "hmm/transition-model.h"
 #include "hmm/hmm-topology.h"
 #include "landmarks/landmark-utils.h"
@@ -88,6 +89,7 @@ namespace kaldi {
 
   // Returns log likelihoods. Assumes the first state produces the first frame.
   void ComputeHmmForwardVariables(const SubMatrix<BaseFloat> &features,
+				  const AmDiagGmm &am_gmm,
 				  const std::vector<std::vector<BaseFloat> > &A,
 				  const std::vector<int32> &pdf_ids,
 				  std::vector<std::vector<BaseFloat> > *alpha) {
@@ -99,10 +101,15 @@ namespace kaldi {
     alpha->clear();
     alpha->resize(num_frames, std::vector<BaseFloat>(num_states, kLogZero));
     // Initialize with the first state and the first frame
+    BaseFloat temp = am_gmm.LogLikelihood(pdf_ids[0], features.Row(0));
     (*alpha)[0][0] = features.Row(0)(pdf_ids[0]);
+    KALDI_LOG << "ComputeHMMForwardVariables";
+    KALDI_LOG << "0, 0: " << (*alpha)[0][0] << ", " << temp;
     for (int32 t = 1; t < num_frames; ++t) {
       for (int32 j = 0; j < num_states; ++j) {
+	temp = am_gmm.LogLikelihood(pdf_ids[j], features.Row(t));
 	const BaseFloat likelihood = features.Row(t)(pdf_ids[j]);
+	KALDI_LOG << t << ", " << pdf_ids[j] << ": " << (*alpha)[0][0] << ", " << temp;
 	std::vector<BaseFloat> prev_alphas;
 	prev_alphas.resize(num_states);
 	for (int32 i = 0; i < num_states; ++i) {
@@ -120,6 +127,7 @@ namespace kaldi {
 
   // Returns log likelihoods. Constrains the sequence to end in the last emitting state.
   void ComputeHmmBackwardVariables(const SubMatrix<BaseFloat> &features,
+				   const AmDiagGmm &am_gmm,
 				   const std::vector<std::vector<BaseFloat> > &A,
 				   const std::vector<int32> &pdf_ids,
 				   std::vector<std::vector<BaseFloat> > *beta) {
@@ -135,7 +143,9 @@ namespace kaldi {
       // Precompute b_j(O_{t+1})
       std::vector<BaseFloat> b(num_states);
       for (int32 j = 0; j < num_states; ++j) {
+	BaseFloat temp = am_gmm.LogLikelihood(pdf_ids[j], features.Row(t + 1));
 	b[j] = features.Row(t + 1)(pdf_ids[j]);
+	KALDI_LOG << t << ", " << pdf_ids[j] << ": " << b[j] << ", " << temp;
       }
       for (int32 i = 0; i < num_states; ++i) {
 	std::vector<BaseFloat> vals(num_states);
@@ -199,6 +209,7 @@ namespace kaldi {
   bool HmmDnnBoundarySampler::ResampleAlignment(const Matrix<BaseFloat> &features,
 						const std::vector<int32> &old_bounds,
 						const LandmarkSeq &landmarks,
+						const AmDiagGmm &am_gmm,
 						const TransitionModel &trans_model,
 						const ContextDependency &ctx_dep,
 						const std::string &utt_id,
@@ -211,15 +222,15 @@ namespace kaldi {
     KALDI_ASSERT(new_class_counts->size() == class_counts.size());
     // Figure out where the current boundaries are using the alignment, as well as the current cluster ids
     std::vector<int32> new_bounds;
-    SampleBounds(features, old_bounds, landmarks, trans_model, ctx_dep, class_counts, &new_bounds);
+    SampleBounds(features, old_bounds, landmarks, am_gmm, trans_model, ctx_dep, class_counts, &new_bounds);
     std::vector<int32> new_clusters;
-    SampleClusters(features, utt_id, new_bounds, trans_model, ctx_dep, class_counts, &new_clusters);
+    SampleClusters(features, utt_id, new_bounds, am_gmm, trans_model, ctx_dep, class_counts, &new_clusters);
     // Merge any adjacent segments that were assigned to the same cluster
     std::vector<int32> merged_bounds;
     std::vector<int32> merged_clusters;
     MergeAdjacentDuplicates(new_bounds, new_clusters, &merged_bounds, &merged_clusters);
     std::vector<int32> state_sequence;
-    SampleStateSequence(features, merged_bounds, merged_clusters, trans_model, ctx_dep, &state_sequence);
+    SampleStateSequence(features, merged_bounds, merged_clusters, am_gmm, trans_model, ctx_dep, &state_sequence);
     WriteNewAlignment(state_sequence, utt_id, alignment_writer);
     // Update the class counts using old_clusters and new_clusters
     for (int32 i = 0; i < merged_clusters.size(); ++i) {
@@ -269,6 +280,7 @@ namespace kaldi {
   void HmmDnnBoundarySampler::SampleBounds(const Matrix<BaseFloat> &features,
 					   const std::vector<int32> &old_bounds, 
 					   const LandmarkSeq &landmarks,
+					   const AmDiagGmm &am_gmm,
 					   const TransitionModel &trans_model,
 					   const ContextDependency &ctx_dep,
 					   const std::vector<int32> &class_counts,
@@ -383,11 +395,11 @@ namespace kaldi {
 	const SubMatrix<BaseFloat> whole_segment_features =
 	  SubMatrix<BaseFloat>(features, start_frame, end_frame - start_frame + 1, 0, num_cols);
 	const BaseFloat left_segment_likelihood = 
-	  ComputeSegmentLikelihood(left_segment_features, trans_model, ctx_dep, class_counts, N_minus);
+	  ComputeSegmentLikelihood(left_segment_features, am_gmm, trans_model, ctx_dep, class_counts, N_minus);
 	const BaseFloat right_segment_likelihood = 
-	  ComputeSegmentLikelihood(right_segment_features, trans_model, ctx_dep, class_counts, N_minus + 1);
+	  ComputeSegmentLikelihood(right_segment_features, am_gmm, trans_model, ctx_dep, class_counts, N_minus + 1);
 	const BaseFloat whole_segment_likelihood = 
-	  ComputeSegmentLikelihood(whole_segment_features, trans_model, ctx_dep, class_counts, N_minus);
+	  ComputeSegmentLikelihood(whole_segment_features, am_gmm, trans_model, ctx_dep, class_counts, N_minus);
 	// Now we can compute the normalized posterior for this boundary variable and sample from it.
 	//KALDI_LOG << "left_segment_likelihood = " << left_segment_likelihood;
 	//KALDI_LOG << "right_segment_likelihood = " << right_segment_likelihood;
@@ -423,6 +435,7 @@ namespace kaldi {
   void HmmDnnBoundarySampler::SampleClusters(const Matrix<BaseFloat> &features,
 					     const std::string &utt_id,
 					     const std::vector<int32> &new_bounds, 
+					     const AmDiagGmm &am_gmm,
 					     const TransitionModel &trans_model,
 					     const ContextDependency &ctx_dep,
 					     const std::vector<int32> &class_counts,
@@ -464,7 +477,7 @@ namespace kaldi {
 	// the new table likelihoods.
 	BaseFloat loglike = kLogZero;
 	if (class_counts[p] > 0) {
-	  loglike = ComputeHmmDnnLikelihood(segment_features, trans_model, ctx_dep, p);
+	  loglike = ComputeHmmDnnLikelihood(segment_features, am_gmm, trans_model, ctx_dep, p);
 	  BaseFloat prior = 1.0 * class_counts[p] / (N - 1 + config_.cluster_gamma);
 	  posteriors[p] = loglike + std::log(prior);
 	  loglikes.push_back(loglike);
@@ -504,6 +517,7 @@ namespace kaldi {
   void HmmDnnBoundarySampler::SampleStateSequence(const Matrix<BaseFloat> &features,
 						  const std::vector<int32> &new_bounds,
 						  const std::vector<int32> &new_clusters,
+						  const AmDiagGmm &am_gmm,
 						  const TransitionModel &trans_model,
 						  const ContextDependency &ctx_dep,
 						  std::vector<int32> *state_sequence) {
@@ -552,7 +566,8 @@ namespace kaldi {
       // a state for each frame conditioned on the last sample
       // i.e. P(state s at time t | last sampled state was i) = a_ij * beta_t(s)
       std::vector<std::vector<BaseFloat> > beta;
-      ComputeHmmBackwardVariables(seg_features, A, pdf_ids, &beta);
+      ComputeHmmBackwardVariables(seg_features, am_gmm, A, pdf_ids, &beta);
+      //ComputeHmmBackwardVariables(seg_features, A, pdf_ids, &beta);
       std::vector<int32> hmm_state_seq(beta.size());
       hmm_state_seq[0] = 0;
       const int32 num_states = beta[0].size();
@@ -653,6 +668,7 @@ namespace kaldi {
 
   // Returns log likelihood
   BaseFloat HmmDnnBoundarySampler::ComputeSegmentLikelihood(const SubMatrix<BaseFloat> &features,
+							    const AmDiagGmm &am_gmm,
 							    const TransitionModel &trans_model,
 							    const ContextDependency &ctx_dep,
 							    const std::vector<int32> &class_counts,
@@ -665,7 +681,7 @@ namespace kaldi {
     std::vector<BaseFloat> loglikes;
     for (int32 p = 0; p < num_phones; ++p) {
       if (class_counts[p] > 0) {
-	const BaseFloat likelihood = ComputeHmmDnnLikelihood(features, trans_model, ctx_dep, p);
+	const BaseFloat likelihood = ComputeHmmDnnLikelihood(features, am_gmm, trans_model, ctx_dep, p);
 	loglikes.push_back(likelihood);
 	const BaseFloat prior = 1.0 * class_counts[p] / (N + config_.cluster_gamma);
 	posteriors.push_back(likelihood + std::log(prior));
@@ -681,6 +697,7 @@ namespace kaldi {
 
   // This really needs to be tested. Returns log likelihood.
   BaseFloat HmmDnnBoundarySampler::ComputeHmmDnnLikelihood(const SubMatrix<BaseFloat> &features,
+							   const AmDiagGmm &am_gmm,
 							   const TransitionModel &trans_model,
 							   const ContextDependency &ctx_dep,
 							   const int32 phone_index) {
@@ -692,7 +709,7 @@ namespace kaldi {
     GetHmmTransitionMatrixAndPdfIds(trans_model, ctx_dep, phone_index + 1, &A, &pdf_ids);
     // Compute the forward variables
     std::vector<std::vector<BaseFloat> > alpha;
-    ComputeHmmForwardVariables(features, A, pdf_ids, &alpha);
+    ComputeHmmForwardVariables(features, am_gmm, A, pdf_ids, &alpha);
     // Lastly, we grab the alpha for the final state at the last frame to get the log likelihood
     // Warning: assumes that the final emitting state is the last state, i.e. pdf_ids.size() - 1
     return (alpha[features.NumRows() - 1][pdf_ids.size() - 1]) / (config_.likelihood_scale);
